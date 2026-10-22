@@ -1,10 +1,24 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Address, Networks } from '@stellar/stellar-sdk';
 import { validateAndConvertXlmToStroops, countDecimalPlaces } from '../utils/xlm-precision';
+import { buildCreateMatchReview, type TransactionReviewSummary } from '../hooks/useTransactions';
+import { TransactionReview } from './TransactionReview';
 
 type Platform = 'lichess' | 'chesscom';
 type TokenType = 'xlm' | 'usdc';
 type Status = 'idle' | 'validating' | 'pending' | 'success' | 'error';
+
+/** Data submitted to `onCreateMatch` — the same shape the transaction is built from. */
+interface CreateMatchSubmitData {
+  player2: string;
+  stakeAmount: string;
+  token: TokenType;
+  gameId: string;
+  platform: Platform;
+  platformUsername?: string;
+  networkPassphrase: string;
+  rpcUrl: string;
+}
 
 // Stellar stroop bounds for stake_amount.
 // 1 stroop is the minimum transferable unit; the contract enforces an upper
@@ -20,16 +34,7 @@ interface CreateMatchProps {
   apiBaseUrl?: string;
   /** Pre-known game IDs that already have a match; duplicates are rejected. */
   knownGameIds?: string[];
-  onCreateMatch?: (data: {
-    player2: string;
-    stakeAmount: string;
-    token: TokenType;
-    gameId: string;
-    platform: Platform;
-    platformUsername?: string;
-    networkPassphrase: string;
-    rpcUrl: string;
-  }) => Promise<string>;
+  onCreateMatch?: (data: CreateMatchSubmitData) => Promise<string>;
 }
 
 interface FormData {
@@ -188,6 +193,13 @@ export function CreateMatch({
   const [token, setToken] = useState<TokenType>('xlm');
   const [matchId, setMatchId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
+  /** Transaction review step shown after validation, before the signature request. */
+  const [review, setReview] = useState<TransactionReviewSummary | null>(null);
+  /** Payload submitted on confirm — mirrors the review fields. */
+  const [reviewPayload, setReviewPayload] = useState<CreateMatchSubmitData | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const submitBtnRef = useRef<HTMLButtonElement>(null);
 
   function updateField(
     key: 'player2' | 'stakeAmount' | 'gameId' | 'platform' | 'platformUsername',
@@ -264,16 +276,16 @@ export function CreateMatch({
         return;
       }
 
-      setStatus('pending');
-
+      // Game validation passed — present the review step before signing.
+      // The review is derived from the same typed inputs used to construct the
+      // transaction, so the user reviews exactly what will be submitted.
       try {
-        // Convert decimal XLM to stroops
         const stakeValidation = validateAndConvertXlmToStroops(formData.stakeAmount.trim());
         if (!stakeValidation.valid || stakeValidation.stroops === undefined) {
           throw new Error('Invalid stake amount');
         }
 
-        const result = await onCreateMatch?.({
+        const payload: CreateMatchSubmitData = {
           player2: formData.player2,
           stakeAmount: stakeValidation.stroops.toString(),
           token,
@@ -282,21 +294,68 @@ export function CreateMatch({
           platformUsername: formData.platformUsername || undefined,
           networkPassphrase,
           rpcUrl,
-        });
+        };
 
-        if (result) {
-          setMatchId(result);
-          setStatus('success');
-        } else {
-          throw new Error('Failed to create match');
-        }
+        const summary = buildCreateMatchReview(
+          {
+            player2: formData.player2,
+            stakeAmount: formData.stakeAmount.trim(),
+            token,
+            gameId: formData.gameId,
+            platform: formData.platform,
+          },
+          networkPassphrase === Networks.TESTNET ? 'testnet' : 'mainnet',
+        );
+
+        setReviewPayload(payload);
+        setReview(summary);
+        setStatus('idle');
+        setErrorMsg('');
       } catch (err) {
         setStatus('error');
-        setErrorMsg(err instanceof Error ? err.message : 'Failed to create match');
+        setErrorMsg(err instanceof Error ? err.message : 'Unable to prepare transaction');
+        return;
       }
     },
     [formData, player1Address, token, apiBaseUrl, knownGameIds, onCreateMatch, networkPassphrase, rpcUrl],
   );
+
+  const handleConfirmReview = useCallback(async () => {
+    setSubmitting(true);
+    setReviewError(null);
+    if (!reviewPayload) {
+      setSubmitting(false);
+      return;
+    }
+
+    try {
+      const result = await onCreateMatch?.(reviewPayload);
+      if (result) {
+        setMatchId(result);
+        setStatus('success');
+      } else {
+        throw new Error('Failed to create match');
+      }
+      // Success: clear the review and move focus back to the submit button.
+      setReview(null);
+      setReviewPayload(null);
+    } catch (err) {
+      // Keep the review open so the user can see the error and retry instead
+      // of losing context after a failed signature attempt.
+      setReviewError(err instanceof Error ? err.message : 'Failed to create match');
+    } finally {
+      setSubmitting(false);
+      submitBtnRef.current?.focus?.();
+    }
+  }, [onCreateMatch, reviewPayload]);
+
+  const handleCancelReview = useCallback(() => {
+    setReview(null);
+    setReviewPayload(null);
+    setReviewError(null);
+    setStatus('idle');
+    submitBtnRef.current?.focus();
+  }, []);
 
   function resetForm() {
     setFormData({
@@ -310,6 +369,9 @@ export function CreateMatch({
     setStatus('idle');
     setMatchId(null);
     setErrorMsg('');
+    setReview(null);
+    setReviewPayload(null);
+    setReviewError(null);
   }
 
   const isBusy = status === 'validating' || status === 'pending';
@@ -341,7 +403,17 @@ export function CreateMatch({
       )}
 
       {!matchId && (
-        <form onSubmit={handleSubmit} noValidate data-testid="create-match-form">
+        <>
+          {review ? (
+            <TransactionReview
+              summary={review}
+              onConfirm={handleConfirmReview}
+              onCancel={handleCancelReview}
+              isConfirming={submitting}
+              errorMessage={reviewError ?? undefined}
+            />
+          ) : (
+            <form onSubmit={handleSubmit} noValidate data-testid="create-match-form">
           {/* Token selector */}
           <div className="form-group">
             <label>Stake Token</label>
@@ -501,6 +573,7 @@ export function CreateMatch({
 
           {/* Submit Button */}
           <button
+            ref={submitBtnRef}
             type="submit"
             className="btn btn-submit"
             disabled={isBusy || hasErrors}
@@ -520,7 +593,9 @@ export function CreateMatch({
               {errorMsg}
             </p>
           )}
-        </form>
+            </form>
+          )}
+        </>
       )}
     </div>
   );

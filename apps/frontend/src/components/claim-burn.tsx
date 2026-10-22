@@ -192,6 +192,15 @@ export function ClaimBurn({
     setTimeout(() => amountInputRef.current?.focus(), 0);
   }
 
+  // Close the confirmation overlay on Escape so keyboard users are never
+  // trapped inside the dialog.
+  function handleOverlayKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      handleCancel();
+    }
+  }
+
   const isPending = status === 'pending';
   const isBusy = isPending || status === 'simulating';
   const showConfirm = status === 'confirm';
@@ -450,6 +459,7 @@ export function ClaimBurn({
           role="dialog"
           aria-modal="true"
           aria-label={`Confirm ${mode}`}
+          onKeyDown={handleOverlayKeyDown}
         >
           <p className="dark:text-slate-100 mb-4 text-base font-semibold text-slate-900">
             {mode === 'claim' ? 'Claim' : 'Burn'} <strong>{confirmAmount}</strong> {tokenSymbol}?

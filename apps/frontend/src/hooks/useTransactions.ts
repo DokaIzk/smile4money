@@ -17,6 +17,42 @@ export interface CreateMatchInput {
   platform: 'lichess' | 'chesscom';
 }
 
+/**
+ * Readable summary of a transaction that will be submitted for signature.
+ * Derived from the same typed `CreateMatchInput` used to build the transaction,
+ * so the review always reflects exactly what the user is about to sign.
+ */
+export interface TransactionReviewSummary {
+  /** Opponent (player 2) Stellar address. */
+  opponent: string;
+  /** Asset being staked (XLM native or USDC). */
+  asset: string;
+  /** Stake amount as entered by the user (decimal XLM). */
+  stake: string;
+  /** Target network (e.g. "Testnet"). */
+  network: string;
+  /** Contract action being performed (e.g. "Create match"). */
+  action: string;
+}
+
+/**
+ * Build a transaction review summary from the typed inputs used to construct
+ * the `create_match` transaction. Kept separate from the UI so it can be
+ * unit-tested against the submitted arguments without rendering a component.
+ */
+export function buildCreateMatchReview(
+  data: CreateMatchInput,
+  network: Network,
+): TransactionReviewSummary {
+  return {
+    opponent: data.player2,
+    asset: data.token === 'xlm' ? 'XLM (native)' : 'USDC',
+    stake: data.stakeAmount,
+    network: network.charAt(0).toUpperCase() + network.slice(1),
+    action: 'Create match',
+  };
+}
+
 type ClaimBurnMode = 'claim' | 'burn';
 
 function getNetworkPassphrase(network: Network): string {
